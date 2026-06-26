@@ -2150,6 +2150,7 @@ function CategoryPanel({
     category.name.toLowerCase().includes(query.trim().toLowerCase()),
   );
 
+  // push 20:39 pm
   const addCategory = () => {
     onAddCategory(newName, newColor);
     setNewName("");
@@ -2162,7 +2163,7 @@ function CategoryPanel({
       <div className="space-y-5">
         <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-dark-600 dark:bg-dark-800">
           <div className="mb-2 text-xs font-semibold uppercase text-gray-500 dark:text-dark-300">
-            Asignada
+            Asignadas
           </div>
           <div className="flex flex-wrap gap-2">
             {selectedCategories.length === 0 ? (
