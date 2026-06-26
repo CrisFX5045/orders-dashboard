@@ -1214,7 +1214,7 @@ export default function OrdersDashboard() {
               Libreta operativa
             </div>
             <h1 className="mt-1 text-xl font-semibold tracking-normal text-gray-950 dark:text-white">
-              Casos y dudas de Orders
+              DASHBOARD DE notas de caso
             </h1>
           </div>
 
