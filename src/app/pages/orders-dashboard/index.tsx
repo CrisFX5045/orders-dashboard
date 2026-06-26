@@ -10,6 +10,7 @@ import {
   FaCheck,
   FaChevronDown,
   FaCopy,
+  FaEye,
   FaLightbulb,
   FaMoneyBillWave,
   FaPlus,
@@ -794,6 +795,15 @@ function getCedulaVariants(value: string) {
     }
   };
 
+  const addCompletedCedula = () => {
+    if (digits.length === 7 || digits.length === 8) {
+      const grouped = `${digits.slice(0, 1)}${digits.slice(1, 4).padStart(4, "0")}${digits.slice(4).padStart(4, "0")}`;
+      if (grouped.length === 9) {
+        add("Con ceros faltantes", grouped);
+      }
+    }
+  };
+
   if (digits.length === 7) {
     add("Con guiones", `${digits.slice(0, 1)}-${digits.slice(1, 4)}-${digits.slice(4)}`);
   } else if (digits.length === 8) {
@@ -805,6 +815,8 @@ function getCedulaVariants(value: string) {
   if (digits.length >= 10) {
     add("Juridica", `${digits.slice(0, 1)}-${digits.slice(1, 4)}-${digits.slice(4)}`);
   }
+
+  addCompletedCedula();
 
   return variants;
 }
@@ -941,15 +953,19 @@ function buildProductLine(product: CaseProduct) {
 function buildGeneratedNote(note: CaseNote) {
   const products = note.products.length > 0 ? note.products : normalizeProducts(note);
   const productLines = products.length > 0 ? products.map(buildProductLine).join("\n") : "Pendiente";
+  const paymentMethod = note.total?.trim();
 
   return [
+    paymentMethod ? `//METODO DE PAGO ${paymentMethod}` : undefined,
     `Nombre de cliente: ${note.customerName || "Pendiente"}`,
     `Cedula: ${note.cedula || "Pendiente"}`,
     `Telefono: ${note.phone || "Pendiente"}`,
     `Correo de cliente: ${note.email || "Pendiente"}`,
     "SKU de productos:",
     productLines,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export default function OrdersDashboard() {
@@ -1250,11 +1266,7 @@ export default function OrdersDashboard() {
                 classNames={{ root: "w-full sm:w-56" }}
                 aria-label="Plantilla rapida"
                 data={[
-                  { label: "Sin plantilla", value: "" },
-                  { label: "Laptop", value: "laptop" },
-                  { label: "Credix", value: "credix" },
-                  { label: "Envio", value: "envio" },
-                  { label: "Licencias", value: "licencias" },
+                  { label: "Sin plantilla", value: "" }
                 ]}
               />
               <Button color="primary" className="h-10 shrink-0 gap-2 rounded-md px-4" onClick={() => addNote()}>
@@ -1836,14 +1848,19 @@ function CaseCard({
     <Card
       skin="bordered"
       className={clsx(
-        "overflow-hidden rounded-lg border-l-4 bg-white transition-colors dark:bg-dark-800",
+        "overflow-hidden rounded-lg border-l-4 bg-white transition-colors hover:bg-gray-50 dark:bg-dark-800 dark:hover:bg-dark-700 cursor-pointer",
         categoryAccentClass(),
       )}
       style={categoryAccentStyle(accentCategory?.color)}
+      onClick={onOpen}
     >
       <div className="p-5">
         <div className="flex items-start justify-between gap-3">
-          <button type="button" className="min-w-0 text-left" onClick={onOpen}>
+          <button
+            type="button"
+            className="min-w-0 text-left rounded-md"
+            onClick={onOpen}
+          >
             <div className="flex min-w-0 items-center gap-2">
               <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary-50 text-primary-600 dark:bg-primary-500/10">
                 <FaRegStickyNote />
@@ -1859,10 +1876,10 @@ function CaseCard({
             </div>
           </button>
           <div className="flex shrink-0 items-center gap-2">
-            <Button isIcon variant="flat" className="size-8 rounded-md" onClick={onOpen} title="Abrir caso">
-              <FaChevronDown className={clsx("transition", isOpen && "rotate-180")} />
+            <Button isIcon variant="flat" className="size-8 rounded-md" onClick={(event) => event.stopPropagation() || onOpen()} title="Abrir caso">
+              <FaEye className={clsx("transition", isOpen && "rotate-180")} />
             </Button>
-            <Button isIcon color="error" variant="flat" className="size-8 rounded-md" onClick={onDelete} title="Finalizar caso">
+            <Button isIcon color="error" variant="flat" className="size-8 rounded-md" onClick={(event) => { event.stopPropagation(); onDelete(); }} title="Finalizar caso">
               <FaTrash />
             </Button>
           </div>
@@ -1903,19 +1920,26 @@ function CaseCard({
                 </div>
                 <Input label="Telefono" value={note.phone} onChange={(event) => onUpdate({ phone: event.target.value })} />
                 <Input label="Correo" value={note.email} onChange={(event) => onUpdate({ email: event.target.value })} />
-                <Input label="Monto" value={note.total} onChange={(event) => onUpdate({ total: event.target.value })} prefix={<FaMoneyBillWave className="size-4" />} />
+                <Input label="Metodo de pago" value={note.total} onChange={(event) => onUpdate({ total: event.target.value })} prefix={<FaMoneyBillWave className="size-4" />} />
                 <ProductsEditor
                   products={note.products.length > 0 ? note.products : normalizeProducts(note)}
                   onChange={updateProducts}
                 />
+                <QuickCategorySelector
+                  note={note}
+                  categories={categories}
+                  onToggleCategory={onToggleCategory}
+                />
+                <GeneratedNote value={generatedNote} />
                 <Textarea
                   label="Nota libre"
                   value={note.freeNote}
                   onChange={(event) => onUpdate({ freeNote: event.target.value })}
                   rootProps={{ className: "sm:col-span-2" }}
-                  className="min-h-32"
+                  className="min-h-32 resize-y"
                   placeholder="Lo que no quieres olvidar de la llamada..."
                 />
+                <TipificationHint tipification={tipification} />
                 <CategoryPanel
                   note={note}
                   categories={categories}
@@ -1923,8 +1947,6 @@ function CaseCard({
                   onToggleCategory={onToggleCategory}
                   onAddCategory={onAddCategory}
                 />
-                <GeneratedNote value={generatedNote} />
-                <TipificationHint tipification={tipification} />
               </div>
             </Section>
           </div>
@@ -2005,10 +2027,13 @@ function ProductsEditor({
   products: CaseProduct[];
   onChange: (products: CaseProduct[]) => void;
 }) {
-  const productList =
-    products.length > 0
-      ? products
-      : [{ id: crypto.randomUUID(), code: "", needsTransfer: false }];
+  const [defaultProduct] = useState(() => ({
+    id: crypto.randomUUID(),
+    code: "",
+    needsTransfer: false,
+  }));
+
+  const productList = products.length > 0 ? products : [defaultProduct];
 
   const updateProduct = (id: string, patch: Partial<CaseProduct>) => {
     onChange(productList.map((product) => (product.id === id ? { ...product, ...patch } : product)));
@@ -2107,6 +2132,46 @@ function GeneratedNote({ value }: { value: string }) {
   );
 }
 
+function QuickCategorySelector({
+  note,
+  categories,
+  onToggleCategory,
+}: {
+  note: CaseNote;
+  categories: NoteCategory[];
+  onToggleCategory: (categoryId: string) => void;
+}) {
+  return (
+    <div className="sm:col-span-2">
+      <div className="mb-2 text-sm font-semibold text-gray-800 dark:text-dark-50">Seleccionar categoría</div>
+      <div className="flex flex-wrap gap-2">
+        {categories.length > 0 ? (
+          categories.map((category) => {
+            const selected = note.categoryIds.includes(category.id);
+            return (
+              <button
+                key={category.id}
+                type="button"
+                onClick={() => onToggleCategory(category.id)}
+                style={categoryChipStyle(category.color, selected)}
+                className={clsx(
+                  "rounded-md border px-3 py-2 text-left text-sm font-medium transition hover:shadow-sm",
+                  categoryClasses(category.color, selected),
+                  !selected && "opacity-80 hover:opacity-100",
+                )}
+              >
+                {category.name}
+              </button>
+            );
+          })
+        ) : (
+          <span className="text-sm text-gray-500 dark:text-dark-300">No hay categorías rápidas disponibles.</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TipificationHint({ tipification }: { tipification: Tipification }) {
   return (
     <div className="rounded-lg border border-info/25 bg-info/5 p-3 dark:bg-info/10 sm:col-span-2">
@@ -2159,7 +2224,7 @@ function CategoryPanel({
 
   return (
     <div className="sm:col-span-2">
-      <Section title="Categoria de la nota" defaultOpen>
+      <Section title="Categoria de la nota" defaultOpen={false}>
       <div className="space-y-5">
         <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-dark-600 dark:bg-dark-800">
           <div className="mb-2 text-xs font-semibold uppercase text-gray-500 dark:text-dark-300">
