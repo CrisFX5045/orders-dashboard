@@ -78,6 +78,7 @@ type MessageTemplateId =
 type CaseNote = {
   id: string;
   title: string;
+  syncTitleWithCustomer: boolean;
   createdAt: number;
   updatedAt: number;
   orderNumber: string;
@@ -516,6 +517,7 @@ function createCase(template: Template = "", createdAt = Date.now()): CaseNote {
   const base: CaseNote = {
     id: crypto.randomUUID(),
     title: "Nueva nota de caso",
+    syncTitleWithCustomer: false,
     createdAt: now,
     updatedAt: now,
     orderNumber: "",
@@ -663,6 +665,7 @@ function normalizeCase(item: Partial<CaseNote>): CaseNote {
     categoryIds: item.categoryIds?.slice(0, 1) ?? [],
     products: normalizeProducts(item),
     generatedNote: item.generatedNote ?? "",
+    syncTitleWithCustomer: item.syncTitleWithCustomer ?? false,
   };
 }
 
@@ -2079,13 +2082,38 @@ function CaseCard({
 
   useEffect(() => {
     if (tseMatch && !note.customerName.trim()) {
-      onUpdate({ customerName: tseMatch });
+      onUpdate({
+        customerName: tseMatch,
+        ...(note.syncTitleWithCustomer ? { title: tseMatch } : {}),
+      });
     }
-  }, [note.customerName, onUpdate, tseMatch]);
+  }, [note.customerName, note.syncTitleWithCustomer, onUpdate, tseMatch]);
+
+  const updateCustomerName = (value: string) => {
+    onUpdate({
+      customerName: value,
+      ...(note.syncTitleWithCustomer ? { title: value || "Nueva nota de caso" } : {}),
+    });
+  };
+
+  const updateTitleSync = (checked: boolean) => {
+    onUpdate({
+      syncTitleWithCustomer: checked,
+      ...(checked && note.customerName.trim() ? { title: note.customerName.trim() } : {}),
+    });
+  };
 
   const updateCedula = (value: string) => {
     const match = findTseName(value, tseIndex);
-    onUpdate(match ? { cedula: value, customerName: match } : { cedula: value });
+    onUpdate(
+      match
+        ? {
+            cedula: value,
+            customerName: match,
+            ...(note.syncTitleWithCustomer ? { title: match } : {}),
+          }
+        : { cedula: value },
+    );
   };
 
   const updateProducts = (products: CaseProduct[]) => {
@@ -2162,10 +2190,21 @@ function CaseCard({
           <div className="space-y-5">
             <Section title="Nota del caso" defaultOpen>
               <div className="grid gap-4 lg:grid-cols-2">
-                <Input label="Titulo" value={note.title} onChange={(event) => onUpdate({ title: event.target.value })} />
+                <div>
+                  <Input label="Titulo" value={note.title} onChange={(event) => onUpdate({ title: event.target.value })} />
+                  <label className="mt-2 inline-flex cursor-pointer items-center gap-2 text-xs font-medium text-gray-600 dark:text-dark-200">
+                    <input
+                      type="checkbox"
+                      checked={note.syncTitleWithCustomer}
+                      onChange={(event) => updateTitleSync(event.target.checked)}
+                      className="size-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500 dark:bg-dark-700"
+                    />
+                    Usar Cliente como titulo
+                  </label>
+                </div>
                 <Input label="Numero de Order" value={note.orderNumber} onChange={(event) => onUpdate({ orderNumber: event.target.value })} />
                 <div>
-                  <Input label="Cliente" value={note.customerName} onChange={(event) => onUpdate({ customerName: event.target.value })} />
+                  <Input label="Cliente" value={note.customerName} onChange={(event) => updateCustomerName(event.target.value)} />
                   {showTseNotFound && (
                     <p className="mt-1 text-xs text-warning-darker dark:text-warning-lighter">
                       No se encontro coincidencia. Buscar en el sitio de TSE.
