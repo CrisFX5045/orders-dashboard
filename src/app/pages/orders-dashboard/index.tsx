@@ -20,9 +20,19 @@ import {
 } from "react-icons/fa";
 
 import { Badge, Button, Card, Input, Select, Textarea } from "@/components/ui";
+import tsePadronUrl from "@/assets/docs/personas-tse/PADRON_COMPLETO.txt?url";
 
 const STORAGE_KEY = "orders-dashboard-state-v2";
 const LEGACY_STORAGE_KEY = "orders-dashboard-state-v1";
+
+type TseIndex = Map<string, string>;
+type TseLoadState = {
+  status: "idle" | "loading" | "ready" | "error";
+  count: number;
+};
+
+let tseIndexCache: TseIndex | null = null;
+let tseIndexPromise: Promise<TseIndex> | null = null;
 
 type PaymentMethod =
   | ""
@@ -74,6 +84,7 @@ type CaseNote = {
   email: string;
   skuList: string;
   products: CaseProduct[];
+  generatedNote: string;
   freeNote: string;
   total: string;
   hasLaptop: boolean;
@@ -511,6 +522,7 @@ function createCase(template: Template = "", createdAt = Date.now()): CaseNote {
     email: "",
     skuList: "",
     products: [],
+    generatedNote: "",
     freeNote: "",
     total: "",
     hasLaptop: false,
@@ -647,6 +659,7 @@ function normalizeCase(item: Partial<CaseNote>): CaseNote {
     checkedSteps: item.checkedSteps ?? {},
     categoryIds: item.categoryIds?.slice(0, 1) ?? [],
     products: normalizeProducts(item),
+    generatedNote: item.generatedNote ?? "",
   };
 }
 
@@ -821,6 +834,108 @@ function getCedulaVariants(value: string) {
   return variants;
 }
 
+function cleanTseNamePart(value: string | undefined) {
+  return (value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function addTseLineToIndex(line: string, index: TseIndex) {
+  if (!line.trim()) return;
+  const parts = line.split(",");
+  const cedula = parts[0]?.trim();
+  if (!cedula) return;
+
+  const name = [
+    cleanTseNamePart(parts[5]),
+    cleanTseNamePart(parts[6]),
+    cleanTseNamePart(parts[7]),
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  if (name) index.set(cedula, name);
+}
+
+async function parseTseStream(response: Response, onProgress?: (count: number) => void) {
+  const index: TseIndex = new Map();
+  const reader = response.body?.getReader();
+
+  if (!reader) {
+    const text = await response.text();
+    text.split(/\r?\n/).forEach((line, count) => {
+      addTseLineToIndex(line, index);
+      if (count > 0 && count % 50000 === 0) onProgress?.(index.size);
+    });
+    return index;
+  }
+
+  const decoder = new TextDecoder("utf-8");
+  let pending = "";
+  let processed = 0;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    pending += decoder.decode(value, { stream: true });
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() ?? "";
+
+    for (const line of lines) {
+      addTseLineToIndex(line, index);
+      processed += 1;
+      if (processed % 50000 === 0) onProgress?.(index.size);
+    }
+  }
+
+  pending += decoder.decode();
+  addTseLineToIndex(pending, index);
+  onProgress?.(index.size);
+  return index;
+}
+
+function loadTseIndex(onProgress?: (count: number) => void) {
+  if (tseIndexCache) return Promise.resolve(tseIndexCache);
+  if (tseIndexPromise) return tseIndexPromise;
+
+  tseIndexPromise = fetch(tsePadronUrl)
+    .then((response) => {
+      if (!response.ok) throw new Error("No se pudo cargar el padron TSE");
+      return parseTseStream(response, onProgress);
+    })
+    .then((index) => {
+      tseIndexCache = index;
+      return index;
+    })
+    .catch((error) => {
+      tseIndexPromise = null;
+      throw error;
+    });
+
+  return tseIndexPromise;
+}
+
+function getCedulaLookupKeys(value: string) {
+  const keys = new Set<string>();
+  const digits = value.replace(/\D/g, "");
+  if (digits) keys.add(digits);
+
+  getCedulaVariants(value).forEach((item) => {
+    const normalized = item.value.replace(/\D/g, "");
+    if (normalized) keys.add(normalized);
+  });
+
+  return Array.from(keys);
+}
+
+function findTseName(value: string, index: TseIndex | null) {
+  if (!index) return "";
+  for (const key of getCedulaLookupKeys(value)) {
+    const match = index.get(key);
+    if (match) return match;
+  }
+  return "";
+}
+
 function formatAgo(timestamp: number) {
   const diff = Math.max(1, Math.floor((Date.now() - timestamp) / 60000));
   if (diff < 60) return `hace ${diff} min`;
@@ -970,6 +1085,11 @@ function buildGeneratedNote(note: CaseNote) {
 
 export default function OrdersDashboard() {
   const [state, setState] = useState<AppState>(loadState);
+  const [tseIndex, setTseIndex] = useState<TseIndex | null>(tseIndexCache);
+  const [tseLoadState, setTseLoadState] = useState<TseLoadState>({
+    status: tseIndexCache ? "ready" : "idle",
+    count: tseIndexCache?.size ?? 0,
+  });
   const [template, setTemplate] = useState<Template>("");
   const today = useMemo(() => new Date(), []);
   const [selectedMonth, setSelectedMonth] = useState(toMonthKey(today));
@@ -979,6 +1099,31 @@ export default function OrdersDashboard() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
+
+  useEffect(() => {
+    let active = true;
+    setTseLoadState((current) =>
+      current.status === "ready"
+        ? current
+        : { status: "loading", count: current.count },
+    );
+
+    void loadTseIndex((count) => {
+      if (active) setTseLoadState({ status: "loading", count });
+    })
+      .then((index) => {
+        if (!active) return;
+        setTseIndex(index);
+        setTseLoadState({ status: "ready", count: index.size });
+      })
+      .catch(() => {
+        if (active) setTseLoadState({ status: "error", count: 0 });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const monthWeeks = useMemo(() => getMonthWeeks(selectedMonth), [selectedMonth]);
   const activeWeekStart = useMemo(() => {
@@ -1278,6 +1423,8 @@ export default function OrdersDashboard() {
         </div>
       </header>
 
+      <TseLoadToast state={tseLoadState} />
+
       <main className="mx-auto grid max-w-[92rem] gap-6 px-4 py-7 lg:grid-cols-[minmax(0,1fr)_320px] sm:px-6">
         <section className="min-w-0 space-y-5">
           <Card skin="bordered" className="rounded-lg bg-white p-4 dark:bg-dark-800">
@@ -1312,6 +1459,8 @@ export default function OrdersDashboard() {
                   key={note.id}
                   note={note}
                   categories={state.categories}
+                  tseIndex={tseIndex}
+                  tseReady={tseLoadState.status === "ready"}
                   isOpen={false}
                   onOpen={() => openWindow(note.id)}
                   onUpdate={(patch) => updateNote(note.id, patch)}
@@ -1345,6 +1494,8 @@ export default function OrdersDashboard() {
             key={windowState.caseId}
             note={note}
             categories={state.categories}
+            tseIndex={tseIndex}
+            tseReady={tseLoadState.status === "ready"}
             windowState={windowState}
             onFocus={() => focusWindow(note.id)}
             onClose={() => closeWindow(note.id)}
@@ -1395,6 +1546,31 @@ function EmptyState({ dateLabel, onCreate }: { dateLabel?: string; onCreate: () 
         </span>
       </span>
     </button>
+  );
+}
+
+function TseLoadToast({ state }: { state: TseLoadState }) {
+  if (state.status === "idle") return null;
+
+  const text =
+    state.status === "loading"
+      ? `Cargando padron TSE... ${state.count.toLocaleString("es-CR")} personas`
+      : state.status === "ready"
+        ? `Padron TSE listo: ${state.count.toLocaleString("es-CR")} personas`
+        : "No se pudo cargar el padron TSE";
+
+  return (
+    <div
+      className={clsx(
+        "fixed right-4 top-20 z-50 max-w-xs rounded-lg border px-4 py-3 text-sm shadow-lg",
+        state.status === "error"
+          ? "border-error/30 bg-error/10 text-error"
+          : "border-info/30 bg-white text-gray-700 dark:bg-dark-800 dark:text-dark-100",
+      )}
+    >
+      <div className="font-semibold">{state.status === "loading" ? "Preparando busqueda" : "Busqueda TSE"}</div>
+      <div className="mt-1 text-xs leading-5">{text}</div>
+    </div>
   );
 }
 
@@ -1558,6 +1734,8 @@ function CalendarSidebar({
 function CaseWindow({
   note,
   categories,
+  tseIndex,
+  tseReady,
   windowState,
   onFocus,
   onClose,
@@ -1569,6 +1747,8 @@ function CaseWindow({
 }: {
   note: CaseNote;
   categories: NoteCategory[];
+  tseIndex: TseIndex | null;
+  tseReady: boolean;
   windowState: CaseWindowState;
   onFocus: () => void;
   onClose: () => void;
@@ -1664,6 +1844,8 @@ function CaseWindow({
         <CaseCard
           note={note}
           categories={categories}
+          tseIndex={tseIndex}
+          tseReady={tseReady}
           isOpen
           onOpen={() => {}}
           onUpdate={onUpdate}
@@ -1817,6 +1999,8 @@ function InfoWindow({
 function CaseCard({
   note,
   categories,
+  tseIndex,
+  tseReady,
   isOpen,
   onOpen,
   onUpdate,
@@ -1826,6 +2010,8 @@ function CaseCard({
 }: {
   note: CaseNote;
   categories: NoteCategory[];
+  tseIndex: TseIndex | null;
+  tseReady: boolean;
   isOpen: boolean;
   onOpen: () => void;
   onUpdate: (patch: Partial<CaseNote>) => void;
@@ -1836,7 +2022,22 @@ function CaseCard({
   const tipification = useMemo(() => inferTipification(note), [note]);
   const selectedCategories = getSelectedCategories(note, categories);
   const accentCategory = selectedCategories[0];
-  const generatedNote = useMemo(() => buildGeneratedNote(note), [note]);
+  const generatedNote = note.generatedNote || buildGeneratedNote(note);
+  const tseMatch = useMemo(() => findTseName(note.cedula, tseIndex), [note.cedula, tseIndex]);
+  const cedulaDigits = note.cedula.replace(/\D/g, "");
+  const showTseNotFound = tseReady && cedulaDigits.length > 0 && !tseMatch;
+
+  useEffect(() => {
+    if (tseMatch && !note.customerName.trim()) {
+      onUpdate({ customerName: tseMatch });
+    }
+  }, [note.customerName, onUpdate, tseMatch]);
+
+  const updateCedula = (value: string) => {
+    const match = findTseName(value, tseIndex);
+    onUpdate(match ? { cedula: value, customerName: match } : { cedula: value });
+  };
+
   const updateProducts = (products: CaseProduct[]) => {
     onUpdate({
       products,
@@ -1913,9 +2114,21 @@ function CaseCard({
               <div className="grid gap-4 lg:grid-cols-2">
                 <Input label="Titulo" value={note.title} onChange={(event) => onUpdate({ title: event.target.value })} />
                 <Input label="Numero de Order" value={note.orderNumber} onChange={(event) => onUpdate({ orderNumber: event.target.value })} />
-                <Input label="Cliente" value={note.customerName} onChange={(event) => onUpdate({ customerName: event.target.value })} />
                 <div>
-                  <Input label="Cedula" value={note.cedula} onChange={(event) => onUpdate({ cedula: event.target.value })} />
+                  <Input label="Cliente" value={note.customerName} onChange={(event) => onUpdate({ customerName: event.target.value })} />
+                  {showTseNotFound && (
+                    <p className="mt-1 text-xs text-warning-darker dark:text-warning-lighter">
+                      No se encontro coincidencia. Buscar en el sitio de TSE.
+                    </p>
+                  )}
+                  {tseMatch && (
+                    <p className="mt-1 text-xs text-success-darker dark:text-success-lighter">
+                      Coincidencia TSE: {tseMatch}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <Input label="Cedula" value={note.cedula} onChange={(event) => updateCedula(event.target.value)} />
                   <CedulaVariants value={note.cedula} />
                 </div>
                 <Input label="Telefono" value={note.phone} onChange={(event) => onUpdate({ phone: event.target.value })} />
@@ -1930,7 +2143,7 @@ function CaseCard({
                   categories={categories}
                   onToggleCategory={onToggleCategory}
                 />
-                <GeneratedNote value={generatedNote} />
+                <GeneratedNote value={generatedNote} onChange={(value) => onUpdate({ generatedNote: value })} />
                 <Textarea
                   label="Nota libre"
                   value={note.freeNote}
@@ -2095,7 +2308,7 @@ function ProductsEditor({
   );
 }
 
-function GeneratedNote({ value }: { value: string }) {
+function GeneratedNote({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const [copied, setCopied] = useState(false);
 
   const copyNote = async () => {
@@ -2124,7 +2337,7 @@ function GeneratedNote({ value }: { value: string }) {
       </div>
       <Textarea
         value={value}
-        readOnly
+        onChange={(event) => onChange(event.target.value)}
         className="min-h-44 font-mono text-sm leading-6"
         aria-label="Nota generada"
       />

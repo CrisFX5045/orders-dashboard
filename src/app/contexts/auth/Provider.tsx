@@ -9,9 +9,21 @@ import { User } from "@/@types/user";
 
 // ----------------------------------------------------------------------
 
-const LOCAL_AUTH_USERNAME = atob("Q3Jpc0FkbWlu");
-const LOCAL_AUTH_PASSWORD = atob("aGVycmVyYTUwNDU=");
-const LOCAL_AUTH_TOKEN = "orders-dashboard-local-auth";
+const LOCAL_AUTH_ACCOUNTS = [
+  {
+    id: "local-admin",
+    role: "admin",
+    username: atob("Q3Jpc0FkbWlu"),
+    password: atob("aGVycmVyYTUwNDU="),
+  },
+  {
+    id: "call-center",
+    role: "call-center",
+    username: atob("Q2FsbENlbnRlcg=="),
+    password: atob("Q2FsbDEyMzQ="),
+  },
+];
+const LOCAL_AUTH_TOKEN_PREFIX = "orders-dashboard-local-auth";
 
 interface AuthAction {
   type:
@@ -87,15 +99,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const init = async () => {
       try {
         const authToken = window.localStorage.getItem("authToken");
-        if (authToken === LOCAL_AUTH_TOKEN) {
+        const localAccount =
+          authToken === LOCAL_AUTH_TOKEN_PREFIX
+            ? LOCAL_AUTH_ACCOUNTS[0]
+            : LOCAL_AUTH_ACCOUNTS.find(
+                (account) => authToken === `${LOCAL_AUTH_TOKEN_PREFIX}:${account.id}`,
+              );
+
+        if (localAccount) {
           dispatch({
             type: "INITIALIZE",
             payload: {
               isAuthenticated: true,
               user: {
-                id: "local-admin",
-                name: LOCAL_AUTH_USERNAME,
-                role: "admin",
+                id: localAccount.id,
+                name: localAccount.username,
+                role: localAccount.role,
               },
             },
           });
@@ -142,10 +161,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (credentials: { username: string; password: string }) => {
     dispatch({ type: "LOGIN_REQUEST" });
 
-    if (
-      credentials.username.trim() !== LOCAL_AUTH_USERNAME ||
-      credentials.password !== LOCAL_AUTH_PASSWORD
-    ) {
+    const account = LOCAL_AUTH_ACCOUNTS.find(
+      (item) =>
+        item.username === credentials.username.trim() &&
+        item.password === credentials.password,
+    );
+
+    if (!account) {
       dispatch({
         type: "LOGIN_ERROR",
         payload: { errorMessage: "Usuario o contrasena incorrectos" },
@@ -154,16 +176,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const user: User = {
-      id: "local-admin",
-      name: LOCAL_AUTH_USERNAME,
-      role: "admin",
+      id: account.id,
+      name: account.username,
+      role: account.role,
     };
 
-    window.localStorage.setItem("authToken", LOCAL_AUTH_TOKEN);
-      dispatch({
-        type: "LOGIN_SUCCESS",
-        payload: { user },
-      });
+    window.localStorage.setItem("authToken", `${LOCAL_AUTH_TOKEN_PREFIX}:${account.id}`);
+    dispatch({
+      type: "LOGIN_SUCCESS",
+      payload: { user },
+    });
   /*   try {
       const response = await axios.post<{ authToken: string; user: User }>(
         "/login",
