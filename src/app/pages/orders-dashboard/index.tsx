@@ -29,7 +29,10 @@ type TseIndex = Map<string, string>;
 type TseLoadState = {
   status: "idle" | "loading" | "ready" | "error";
   count: number;
+  loadedBytes: number;
+  totalBytes: number | null;
 };
+type TseProgress = Pick<TseLoadState, "count" | "loadedBytes" | "totalBytes">;
 
 let tseIndexCache: TseIndex | null = null;
 let tseIndexPromise: Promise<TseIndex> | null = null;
@@ -855,15 +858,20 @@ function addTseLineToIndex(line: string, index: TseIndex) {
   if (name) index.set(cedula, name);
 }
 
-async function parseTseStream(response: Response, onProgress?: (count: number) => void) {
+async function parseTseStream(response: Response, onProgress?: (progress: TseProgress) => void) {
   const index: TseIndex = new Map();
   const reader = response.body?.getReader();
+  const contentLength = Number(response.headers.get("content-length"));
+  const totalBytes = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null;
 
   if (!reader) {
     const text = await response.text();
+    const loadedBytes = text.length;
     text.split(/\r?\n/).forEach((line, count) => {
       addTseLineToIndex(line, index);
-      if (count > 0 && count % 50000 === 0) onProgress?.(index.size);
+      if (count > 0 && count % 50000 === 0) {
+        onProgress?.({ count: index.size, loadedBytes, totalBytes: totalBytes ?? loadedBytes });
+      }
     });
     return index;
   }
@@ -871,11 +879,13 @@ async function parseTseStream(response: Response, onProgress?: (count: number) =
   const decoder = new TextDecoder("utf-8");
   let pending = "";
   let processed = 0;
+  let loadedBytes = 0;
 
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
 
+    loadedBytes += value.byteLength;
     pending += decoder.decode(value, { stream: true });
     const lines = pending.split(/\r?\n/);
     pending = lines.pop() ?? "";
@@ -883,17 +893,17 @@ async function parseTseStream(response: Response, onProgress?: (count: number) =
     for (const line of lines) {
       addTseLineToIndex(line, index);
       processed += 1;
-      if (processed % 50000 === 0) onProgress?.(index.size);
+      if (processed % 50000 === 0) onProgress?.({ count: index.size, loadedBytes, totalBytes });
     }
   }
 
   pending += decoder.decode();
   addTseLineToIndex(pending, index);
-  onProgress?.(index.size);
+  onProgress?.({ count: index.size, loadedBytes: totalBytes ?? loadedBytes, totalBytes });
   return index;
 }
 
-function loadTseIndex(onProgress?: (count: number) => void) {
+function loadTseIndex(onProgress?: (progress: TseProgress) => void) {
   if (tseIndexCache) return Promise.resolve(tseIndexCache);
   if (tseIndexPromise) return tseIndexPromise;
 
@@ -1089,6 +1099,8 @@ export default function OrdersDashboard() {
   const [tseLoadState, setTseLoadState] = useState<TseLoadState>({
     status: tseIndexCache ? "ready" : "idle",
     count: tseIndexCache?.size ?? 0,
+    loadedBytes: 0,
+    totalBytes: null,
   });
   const [template, setTemplate] = useState<Template>("");
   const today = useMemo(() => new Date(), []);
@@ -1105,19 +1117,36 @@ export default function OrdersDashboard() {
     setTseLoadState((current) =>
       current.status === "ready"
         ? current
-        : { status: "loading", count: current.count },
+        : {
+            status: "loading",
+            count: current.count,
+            loadedBytes: current.loadedBytes,
+            totalBytes: current.totalBytes,
+          },
     );
 
-    void loadTseIndex((count) => {
-      if (active) setTseLoadState({ status: "loading", count });
+    void loadTseIndex((progress) => {
+      if (active) setTseLoadState({ status: "loading", ...progress });
     })
       .then((index) => {
         if (!active) return;
         setTseIndex(index);
-        setTseLoadState({ status: "ready", count: index.size });
+        setTseLoadState((current) => ({
+          status: "ready",
+          count: index.size,
+          loadedBytes: current.totalBytes ?? current.loadedBytes,
+          totalBytes: current.totalBytes,
+        }));
       })
       .catch(() => {
-        if (active) setTseLoadState({ status: "error", count: 0 });
+        if (active) {
+          setTseLoadState({
+            status: "error",
+            count: 0,
+            loadedBytes: 0,
+            totalBytes: null,
+          });
+        }
       });
 
     return () => {
@@ -1550,26 +1579,47 @@ function EmptyState({ dateLabel, onCreate }: { dateLabel?: string; onCreate: () 
 }
 
 function TseLoadToast({ state }: { state: TseLoadState }) {
-  if (state.status === "idle") return null;
+  if (state.status === "idle" || state.status === "ready") return null;
+
+  const progress =
+    state.totalBytes && state.totalBytes > 0
+      ? Math.min(100, Math.round((state.loadedBytes / state.totalBytes) * 100))
+      : null;
 
   const text =
     state.status === "loading"
       ? `Cargando padron TSE... ${state.count.toLocaleString("es-CR")} personas`
-      : state.status === "ready"
-        ? `Padron TSE listo: ${state.count.toLocaleString("es-CR")} personas`
-        : "No se pudo cargar el padron TSE";
+      : "No se pudo cargar el padron TSE";
 
   return (
     <div
       className={clsx(
-        "fixed right-4 top-20 z-50 max-w-xs rounded-lg border px-4 py-3 text-sm shadow-lg",
+        "fixed right-4 top-20 z-50 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-lg border px-4 pb-4 pt-3 text-sm shadow-lg",
         state.status === "error"
           ? "border-error/30 bg-error/10 text-error"
           : "border-info/30 bg-white text-gray-700 dark:bg-dark-800 dark:text-dark-100",
       )}
     >
-      <div className="font-semibold">{state.status === "loading" ? "Preparando busqueda" : "Busqueda TSE"}</div>
+      <div className="font-semibold">
+        {state.status === "loading" ? "Preparando busqueda TSE" : "Busqueda TSE"}
+      </div>
       <div className="mt-1 text-xs leading-5">{text}</div>
+      {state.status === "loading" && (
+        <div className="mt-3">
+          <div className="h-1.5 overflow-hidden rounded-full bg-gray-200 dark:bg-dark-600">
+            <div
+              className={clsx(
+                "h-full rounded-full bg-info transition-all duration-300",
+                progress === null && "w-1/2 animate-pulse",
+              )}
+              style={progress === null ? undefined : { width: `${progress}%` }}
+            />
+          </div>
+          <div className="mt-1 text-right text-[11px] font-medium text-gray-500 dark:text-dark-200">
+            {progress === null ? "Procesando archivo" : `${progress}%`}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
